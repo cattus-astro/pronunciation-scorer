@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const path = require('path');
 const express = require('express');
 const multer = require('multer');
 const usage = require('./usage');
@@ -14,7 +15,7 @@ if (!AZURE_SPEECH_KEY || !AZURE_SPEECH_REGION) {
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
 // Empirically, Tatoeba's has_audio+eng pool behaves as two different
