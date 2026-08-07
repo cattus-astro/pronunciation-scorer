@@ -20,37 +20,58 @@ app.use(express.json());
 
 // Empirically, Tatoeba's has_audio+eng pool behaves as two different
 // populations depending on sort mode: sort=random skews short (~10-50
-// chars, good for easy/medium), while sort=words reversed reliably
-// surfaces long, multi-clause sentences (~80-540 chars, good for hard).
+// chars), while sort=words reversed reliably surfaces long, multi-clause
+// sentences (~80-540 chars). Length targets below are calibrated to the
+// frontend textarea's rendered width (~540px at 16px font, ~60 chars/line):
+// easy = 1 line, medium = 1-2 lines, hard = over 2 lines.
 const HARD_PAGE_RANGE = [2, 20]; // skip page 1 — its ~500-char outliers are too long to read aloud
-const EASY_MAX_LENGTH = 35;
+const LENGTH_RANGES = {
+  easy: [0, 60],
+  medium: [60, 120],
+};
+const HARD_MIN_LENGTH = 120;
+const MAX_ATTEMPTS = 5;
+
+async function fetchTatoebaCandidates(params) {
+  const tatoebaRes = await fetch(`https://tatoeba.org/en/api_v0/search?${params}`);
+  if (!tatoebaRes.ok) {
+    throw new Error(`Tatoeba status ${tatoebaRes.status}`);
+  }
+  const data = await tatoebaRes.json();
+  return (data.results || []).filter((r) => r.lang === 'eng' && r.audios && r.audios.length > 0);
+}
 
 app.get('/api/random-sentence', async (req, res) => {
   const difficulty = ['easy', 'hard'].includes(req.query.difficulty) ? req.query.difficulty : 'medium';
 
-  const params = new URLSearchParams({ from: 'eng', has_audio: 'yes' });
-  if (difficulty === 'hard') {
-    const [min, max] = HARD_PAGE_RANGE;
-    params.set('sort', 'words');
-    params.set('sort_reverse', 'yes');
-    params.set('page', String(Math.floor(Math.random() * (max - min + 1)) + min));
-  } else {
-    params.set('sort', 'random');
-  }
-
   try {
-    const tatoebaRes = await fetch(`https://tatoeba.org/en/api_v0/search?${params}`);
-    if (!tatoebaRes.ok) {
-      throw new Error(`Tatoeba status ${tatoebaRes.status}`);
+    let candidates;
+
+    if (difficulty === 'hard') {
+      const [min, max] = HARD_PAGE_RANGE;
+      let lastBatch = [];
+      let inRange = [];
+      for (let attempt = 0; attempt < MAX_ATTEMPTS && inRange.length === 0; attempt++) {
+        const params = new URLSearchParams({ from: 'eng', has_audio: 'yes', sort: 'words', sort_reverse: 'yes' });
+        params.set('page', String(Math.floor(Math.random() * (max - min + 1)) + min));
+        lastBatch = await fetchTatoebaCandidates(params);
+        inRange = lastBatch.filter((c) => c.text.length > HARD_MIN_LENGTH);
+      }
+      candidates = inRange.length ? inRange : lastBatch;
+    } else {
+      const [minLen, maxLen] = LENGTH_RANGES[difficulty];
+      let lastBatch = [];
+      let inRange = [];
+      for (let attempt = 0; attempt < MAX_ATTEMPTS && inRange.length === 0; attempt++) {
+        const params = new URLSearchParams({ from: 'eng', has_audio: 'yes', sort: 'random' });
+        lastBatch = await fetchTatoebaCandidates(params);
+        inRange = lastBatch.filter((c) => c.text.length >= minLen && c.text.length <= maxLen);
+      }
+      candidates = inRange.length ? inRange : lastBatch;
     }
-    const data = await tatoebaRes.json();
-    let candidates = (data.results || []).filter((r) => r.lang === 'eng' && r.audios && r.audios.length > 0);
+
     if (!candidates.length) {
       return res.status(502).json({ error: 'No sentences with audio found, try again' });
-    }
-    if (difficulty === 'easy') {
-      const shortOnes = candidates.filter((c) => c.text.length <= EASY_MAX_LENGTH);
-      if (shortOnes.length) candidates = shortOnes;
     }
     const pick = candidates[Math.floor(Math.random() * candidates.length)];
     const audio = pick.audios[0];
