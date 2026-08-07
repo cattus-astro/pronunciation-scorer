@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pronunciation Scorer</title>
+<link rel="stylesheet" href="style.css" />
+<link rel="preconnect" href="https://tatoeba.org" />
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Pronunciation Scorer</h1>
+      <p class="subtitle">Read the sentence aloud, then get phoneme-level feedback.</p>
+    </header>
+
+    <section class="quota" id="quota">
+      <div class="quota-bar"><div class="quota-fill" id="quota-fill"></div></div>
+      <span id="quota-label">Loading quota…</span>
+    </section>
+
+    <section class="card">
+      <div class="reference-row">
+        <label for="reference">Sentence to read</label>
+        <div class="reference-actions">
+          <select id="difficulty" class="btn small">
+            <option value="easy">Easy</option>
+            <option value="medium" selected>Medium</option>
+            <option value="hard">Hard</option>
+          </select>
+          <button id="speak-btn" class="btn small" type="button">🔊 Listen</button>
+          <button id="random-btn" class="btn small" type="button">🎲 Random sentence</button>
+        </div>
+      </div>
+      <textarea id="reference" rows="4">The quick brown fox jumps over the lazy dog.</textarea>
+
+      <div class="controls">
+        <button id="record-btn" class="btn primary">● Record</button>
+        <audio id="playback" controls style="display:none"></audio>
+        <button id="assess-btn" class="btn" disabled>Score my pronunciation</button>
+      </div>
+
+      <p id="status" class="status"></p>
+    </section>
+
+    <section class="card" id="results" style="display:none">
+      <h2>Results</h2>
+      <div class="score-grid" id="score-grid"></div>
+
+      <h3>Word-by-word</h3>
+      <p class="hint">Click a word to jump to its phoneme breakdown below.</p>
+      <p id="word-breakdown" class="word-breakdown"></p>
+
+      <h3>Phoneme breakdown</h3>
+      <div id="phoneme-detail" class="phoneme-detail" style="display:none"></div>
+
+      <div class="legend">
+        <span><i class="dot good"></i> good</span>
+        <span><i class="dot ok"></i> needs work</span>
+        <span><i class="dot bad"></i> mispronounced / omitted</span>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
