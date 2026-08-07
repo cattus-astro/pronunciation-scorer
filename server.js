@@ -17,10 +17,6 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 app.use(express.static('public'));
 app.use(express.json());
 
-app.get('/api/usage', (req, res) => {
-  res.json(usage.getStatus());
-});
-
 // Empirically, Tatoeba's has_audio+eng pool behaves as two different
 // populations depending on sort mode: sort=random skews short (~10-50
 // chars, good for easy/medium), while sort=words reversed reliably

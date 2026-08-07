@@ -54,15 +54,17 @@ quota.
 
 - `usage.js` keeps a running total of audio seconds sent to Azure in
   `usage.json` (git-ignored, resets automatically each calendar month).
-- The server refuses new requests once you're within 30 minutes of the
-  5-hour/month F0 cap, so you get a clear in-app message instead of a raw
-  Azure 403.
+- The server refuses new `/api/assess` requests once you're within 30
+  minutes of the 5-hour/month F0 cap, so you get a clear in-app message
+  instead of a raw Azure 403. There's no progress-bar UI for this anymore
+  (see below) — it's a silent backend check.
 - Even without this guardrail, Azure's F0 tier cannot bill you for
   overage — it just returns errors until the quota resets on the 1st.
 - This only works reliably when `usage.json` lives on a persistent disk
   (i.e. running locally, or on a host like Render/Railway). On serverless
-  hosts (see Vercel below) the counter is best-effort and often resets —
-  Azure's own hard cap is still the real backstop either way.
+  hosts (see Vercel below) the counter resets unpredictably between
+  requests, so the guardrail there is unreliable — Azure's own hard cap is
+  still the real backstop.
 
 ## Deploying to Vercel
 

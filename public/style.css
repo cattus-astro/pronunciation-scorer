@@ -42,25 +42,6 @@ main {
 header h1 { margin-bottom: 4px; font-size: 1.6rem; }
 .subtitle { color: var(--muted); margin-top: 0; }
 
-.quota {
-  margin: 20px 0;
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-.quota-bar {
-  height: 6px;
-  border-radius: 3px;
-  background: var(--border);
-  overflow: hidden;
-  margin-bottom: 6px;
-}
-.quota-fill {
-  height: 100%;
-  background: var(--accent);
-  width: 0%;
-  transition: width 0.3s ease;
-}
-
 .card {
   background: var(--card);
   border: 1px solid var(--border);

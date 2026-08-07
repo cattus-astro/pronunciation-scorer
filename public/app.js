@@ -10,8 +10,6 @@ const resultsEl = document.getElementById('results');
 const scoreGridEl = document.getElementById('score-grid');
 const wordBreakdownEl = document.getElementById('word-breakdown');
 const phonemeDetailEl = document.getElementById('phoneme-detail');
-const quotaFillEl = document.getElementById('quota-fill');
-const quotaLabelEl = document.getElementById('quota-label');
 
 let mediaRecorder = null;
 let chunks = [];
@@ -84,20 +82,6 @@ referenceEl.addEventListener('input', () => {
   invalidateAudioCache();
   stopActiveAudio();
 });
-
-async function refreshQuota() {
-  try {
-    const res = await fetch('/api/usage');
-    const q = await res.json();
-    const pct = Math.min(100, (q.secondsUsed / q.secondsLimit) * 100);
-    quotaFillEl.style.width = `${pct}%`;
-    const usedMin = Math.round(q.secondsUsed / 60);
-    const limitMin = Math.round(q.secondsLimit / 60);
-    quotaLabelEl.textContent = `${usedMin} / ${limitMin} min used this month`;
-  } catch {
-    quotaLabelEl.textContent = 'Quota unavailable';
-  }
-}
 
 async function loadRandomSentence() {
   stopActiveAudio();
@@ -235,12 +219,10 @@ assessBtn.addEventListener('click', async () => {
 
     if (!res.ok) {
       statusEl.textContent = data.error || 'Something went wrong.';
-      if (data.usage) refreshQuotaFrom(data.usage);
       return;
     }
 
     renderResults(data.result);
-    refreshQuotaFrom(data.usage);
     statusEl.textContent = 'Done.';
   } catch (err) {
     statusEl.textContent = `Request failed: ${err.message}`;
@@ -301,14 +283,6 @@ function encodeWavPCM16(samples, sampleRate) {
   }
 
   return new Blob([buffer], { type: 'audio/wav' });
-}
-
-function refreshQuotaFrom(q) {
-  const pct = Math.min(100, (q.secondsUsed / q.secondsLimit) * 100);
-  quotaFillEl.style.width = `${pct}%`;
-  const usedMin = Math.round(q.secondsUsed / 60);
-  const limitMin = Math.round(q.secondsLimit / 60);
-  quotaLabelEl.textContent = `${usedMin} / ${limitMin} min used this month`;
 }
 
 function renderResults(result) {
@@ -410,5 +384,4 @@ function buildPhonemeBlock(word, idx) {
   return block;
 }
 
-refreshQuota();
 loadRandomSentence();
