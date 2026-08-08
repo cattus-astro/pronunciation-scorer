@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const https = require('https');
 const path = require('path');
 const express = require('express');
 const multer = require('multer');
@@ -30,50 +31,160 @@ const LENGTH_RANGES = {
   medium: [60, 120],
 };
 const HARD_MIN_LENGTH = 120;
-const MAX_ATTEMPTS = 5;
 
-async function fetchTatoebaCandidates(params) {
-  const tatoebaRes = await fetch(`https://tatoeba.org/en/api_v0/search?${params}`);
-  if (!tatoebaRes.ok) {
-    throw new Error(`Tatoeba status ${tatoebaRes.status}`);
+const TATOEBA_FETCH_TIMEOUT_MS = 6000;
+
+// Node's global fetch() (undici) takes ~9s to reach tatoeba.org in
+// practice — a reproducible slow path specific to that client, since curl
+// and Node's classic https module both connect in well under a second.
+// Using https directly avoids paying that undici tax on every request.
+function tatoebaGet(url) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      timeout: TATOEBA_FETCH_TIMEOUT_MS,
+      // Tatoeba's server rejects requests with no User-Agent (500) — Node's
+      // https module, unlike curl, sends none by default.
+      headers: { 'User-Agent': 'pronunciation-scorer/1.0', Accept: '*/*' },
+    };
+    const req = https.get(url, options, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve({ statusCode: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+      res.on('error', reject);
+    });
+    req.on('timeout', () => req.destroy(new Error('Tatoeba request timed out')));
+    req.on('error', reject);
+  });
+}
+
+async function fetchTatoebaCandidatesRaw(params) {
+  const res = await tatoebaGet(`https://tatoeba.org/en/api_v0/search?${params}`);
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    throw new Error(`Tatoeba status ${res.statusCode}`);
   }
-  const data = await tatoebaRes.json();
+  const data = JSON.parse(res.body.toString('utf8'));
   return (data.results || []).filter((r) => r.lang === 'eng' && r.audios && r.audios.length > 0);
 }
+
+// Tatoeba appears to throttle by request frequency, not just concurrency —
+// hitting it back-to-back (e.g. several pool refills in quick succession)
+// made individual requests balloon to 10-30s. Serializing every call through
+// one queue with a minimum gap, regardless of which difficulty triggered it,
+// keeps each request at its normal ~0.5-2s instead of compounding.
+const TATOEBA_MIN_INTERVAL_MS = 700;
+let tatoebaQueue = Promise.resolve();
+let lastTatoebaCallAt = 0;
+
+function fetchTatoebaCandidates(params) {
+  const run = async () => {
+    const wait = Math.max(0, TATOEBA_MIN_INTERVAL_MS - (Date.now() - lastTatoebaCallAt));
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    lastTatoebaCallAt = Date.now();
+    return fetchTatoebaCandidatesRaw(params);
+  };
+  const result = tatoebaQueue.then(run, run);
+  tatoebaQueue = result.catch(() => {}); // keep the chain alive even if this call fails
+  return result;
+}
+
+function paramsForDifficulty(difficulty) {
+  if (difficulty === 'hard') {
+    const [min, max] = HARD_PAGE_RANGE;
+    const params = new URLSearchParams({ from: 'eng', has_audio: 'yes', sort: 'words', sort_reverse: 'yes' });
+    params.set('page', String(Math.floor(Math.random() * (max - min + 1)) + min));
+    return params;
+  }
+  return new URLSearchParams({ from: 'eng', has_audio: 'yes', sort: 'random' });
+}
+
+function matchesDifficulty(difficulty, text) {
+  if (difficulty === 'hard') return text.length > HARD_MIN_LENGTH;
+  const [minLen, maxLen] = LENGTH_RANGES[difficulty];
+  return text.length >= minLen && text.length <= maxLen;
+}
+
+// Tatoeba takes ~0.5-2s per request, and hitting it concurrently makes it
+// *slower* (their server appears to throttle concurrent connections per
+// client). So instead of retrying per-request, each difficulty keeps a
+// small background-replenished pool — most requests are served instantly
+// from it, and only a cache-miss (e.g. right after server start) pays the
+// Tatoeba round trip.
+const POOL_LOW_WATERMARK = 8; // a bigger buffer means real usage rarely needs a live refill
+const TAKE_SENTENCE_DEADLINE_MS = 8000; // hard ceiling — always respond, even with an error, rather than hang
+const FALLBACK_POOL_MAX = 20;
+const pools = { easy: [], medium: [], hard: [] };
+// Any real, audio-backed sentence that just didn't match the length target —
+// kept as a last resort so a few unlucky pages in a row (which does happen;
+// a page of 10 sometimes has zero medium-range matches) return a slightly
+// off-length sentence instead of an outright error.
+const fallbackPools = { easy: [], medium: [], hard: [] };
+const refillPromises = { easy: null, medium: null, hard: null };
+
+function addMatchesToPool(difficulty, batch) {
+  const seen = new Set(pools[difficulty].map((c) => c.id));
+  const fallbackSeen = new Set(fallbackPools[difficulty].map((c) => c.id));
+  for (const c of batch) {
+    if (matchesDifficulty(difficulty, c.text)) {
+      if (!seen.has(c.id)) {
+        pools[difficulty].push(c);
+        seen.add(c.id);
+      }
+    } else if (!fallbackSeen.has(c.id) && fallbackPools[difficulty].length < FALLBACK_POOL_MAX) {
+      fallbackPools[difficulty].push(c);
+      fallbackSeen.add(c.id);
+    }
+  }
+}
+
+// Concurrent callers must join the SAME in-flight fetch rather than each
+// firing their own (or, worse, silently no-op'ing because one is already
+// running) — tracking the promise itself, not a boolean, is what makes
+// `await ensureRefill(...)` actually wait for real completion.
+function ensureRefill(difficulty) {
+  if (!refillPromises[difficulty]) {
+    refillPromises[difficulty] = fetchTatoebaCandidates(paramsForDifficulty(difficulty))
+      .then((batch) => addMatchesToPool(difficulty, batch))
+      .catch((err) => console.error(`Pool refill failed for ${difficulty}:`, err))
+      .finally(() => {
+        refillPromises[difficulty] = null;
+      });
+  }
+  return refillPromises[difficulty];
+}
+
+async function takeSentence(difficulty) {
+  if (pools[difficulty].length < POOL_LOW_WATERMARK) {
+    ensureRefill(difficulty); // fire-and-forget top-up
+  }
+  const deadline = Date.now() + TAKE_SENTENCE_DEADLINE_MS;
+  while (!pools[difficulty].length && Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    await Promise.race([
+      ensureRefill(difficulty).catch(() => {}), // already logs; keep looping until deadline
+      new Promise((resolve) => setTimeout(resolve, remaining)),
+    ]);
+  }
+  if (pools[difficulty].length) {
+    const idx = Math.floor(Math.random() * pools[difficulty].length);
+    return pools[difficulty].splice(idx, 1)[0];
+  }
+  if (fallbackPools[difficulty].length) {
+    const idx = Math.floor(Math.random() * fallbackPools[difficulty].length);
+    return fallbackPools[difficulty].splice(idx, 1)[0];
+  }
+  return null;
+}
+
+['easy', 'medium', 'hard'].forEach((d) => ensureRefill(d)); // pre-warm at startup
 
 app.get('/api/random-sentence', async (req, res) => {
   const difficulty = ['easy', 'hard'].includes(req.query.difficulty) ? req.query.difficulty : 'medium';
 
   try {
-    let candidates;
-
-    if (difficulty === 'hard') {
-      const [min, max] = HARD_PAGE_RANGE;
-      let lastBatch = [];
-      let inRange = [];
-      for (let attempt = 0; attempt < MAX_ATTEMPTS && inRange.length === 0; attempt++) {
-        const params = new URLSearchParams({ from: 'eng', has_audio: 'yes', sort: 'words', sort_reverse: 'yes' });
-        params.set('page', String(Math.floor(Math.random() * (max - min + 1)) + min));
-        lastBatch = await fetchTatoebaCandidates(params);
-        inRange = lastBatch.filter((c) => c.text.length > HARD_MIN_LENGTH);
-      }
-      candidates = inRange.length ? inRange : lastBatch;
-    } else {
-      const [minLen, maxLen] = LENGTH_RANGES[difficulty];
-      let lastBatch = [];
-      let inRange = [];
-      for (let attempt = 0; attempt < MAX_ATTEMPTS && inRange.length === 0; attempt++) {
-        const params = new URLSearchParams({ from: 'eng', has_audio: 'yes', sort: 'random' });
-        lastBatch = await fetchTatoebaCandidates(params);
-        inRange = lastBatch.filter((c) => c.text.length >= minLen && c.text.length <= maxLen);
-      }
-      candidates = inRange.length ? inRange : lastBatch;
-    }
-
-    if (!candidates.length) {
+    const pick = await takeSentence(difficulty);
+    if (!pick) {
       return res.status(502).json({ error: 'No sentences with audio found, try again' });
     }
-    const pick = candidates[Math.floor(Math.random() * candidates.length)];
     const audio = pick.audios[0];
     res.json({
       text: pick.text,
@@ -94,14 +205,13 @@ app.get('/api/audio/:id', async (req, res) => {
   }
 
   try {
-    const audioRes = await fetch(`https://tatoeba.org/en/audio/download/${req.params.id}`);
-    if (!audioRes.ok) {
-      return res.status(audioRes.status).end();
+    const audioRes = await tatoebaGet(`https://tatoeba.org/en/audio/download/${req.params.id}`);
+    if (audioRes.statusCode < 200 || audioRes.statusCode >= 300) {
+      return res.status(audioRes.statusCode).end();
     }
-    const buffer = Buffer.from(await audioRes.arrayBuffer());
-    res.set('Content-Type', audioRes.headers.get('content-type') || 'audio/mpeg');
+    res.set('Content-Type', audioRes.headers['content-type'] || 'audio/mpeg');
     res.set('Cache-Control', 'public, max-age=86400');
-    res.send(buffer);
+    res.send(audioRes.body);
   } catch (err) {
     console.error(err);
     res.status(502).json({ error: 'Failed to fetch audio' });

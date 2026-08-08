@@ -100,6 +100,9 @@ async function loadRandomSentence() {
     statusEl.textContent = '';
   } catch (err) {
     statusEl.textContent = `Couldn't fetch a sentence: ${err.message}`;
+    if (!referenceEl.value.trim()) {
+      referenceEl.value = 'The quick brown fox jumps over the lazy dog.';
+    }
   } finally {
     randomBtn.textContent = originalLabel;
     randomBtn.disabled = false;
